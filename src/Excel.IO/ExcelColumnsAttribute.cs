@@ -3,12 +3,10 @@
 
 using System;
 
-namespace Excel.IO
-{
-    /// <summary>
-    /// An attribute that allows non-property fields to be used as columns in an Excel file. This is only intended for use with IDictionary<string, string>.
-    /// </summary>
-    [AttributeUsage(AttributeTargets.Property)]
-    public class ExcelColumnsAttribute : Attribute
-    { }
-}
+namespace Excel.IO;
+
+/// <summary>
+/// An attribute that allows non-property fields to be used as columns in an Excel file. This is only intended for use with IDictionary&amp;ltstring, string&amp;gt.
+/// </summary>
+[AttributeUsage(AttributeTargets.Property)]
+public class ExcelColumnsAttribute : Attribute;

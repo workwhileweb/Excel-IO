@@ -1,17 +1,14 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿using Excel.IO;
 
-namespace Excel.IO.Examples
+namespace ExampleReadAndWrite;
+
+public class Person : IExcelRow
 {
-    public class Person : IExcelRow
-    {
-        public string SheetName { get => "People Sheet"; }
+    public string SheetName => "People Sheet";
 
-        public string EyeColour { get; set; }
+    public string EyeColour { get; set; }
 
-        public int Age { get; set; }
+    public int Age { get; set; }
 
-        public int Height { get; set; }
-    }
+    public int Height { get; set; }
 }

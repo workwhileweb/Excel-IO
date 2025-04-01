@@ -1,10 +1,9 @@
 ﻿// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-namespace Excel.IO
+namespace Excel.IO;
+
+public interface IExcelRow
 {
-    public interface IExcelRow
-    {
-        string SheetName { get; }
-    }
+    string SheetName { get; }
 }

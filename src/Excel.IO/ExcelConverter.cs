@@ -9,423 +9,388 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+// ReSharper disable UnusedMember.Global
 
-namespace Excel.IO
+namespace Excel.IO;
+
+/// <summary>
+/// Converter that allows implementations of <see cref="IExcelRow "/> to be exported.
+/// </summary>
+public class ExcelConverter : IExcelConverter
 {
-    /// <summary>
-    /// Converter that allows implementations of <see cref="IExcelRow "/> to be exported.
-    /// </summary>
-    public class ExcelConverter : IExcelConverter
+    private static SpreadsheetDocument _GetDocument(Stream stream)
     {
-        private SpreadsheetDocument _GetDocument(Stream stream)
+        var spreadsheetDocument = SpreadsheetDocument.Open(stream, isEditable: true);
+
+        return spreadsheetDocument.WorkbookPart == null ? SpreadsheetDocument.Create(stream, SpreadsheetDocumentType.Workbook) : spreadsheetDocument;
+    }
+
+    public void Append(IExcelRow row, Stream outputStream)
+    {
+        using var spreadsheetDocument = _GetDocument(outputStream);
+        Write([row], spreadsheetDocument);
+    }
+
+    /// <summary>
+    /// Exports the given rows to an Excel workbook
+    /// </summary>
+    /// <param name="rows">The rows to write to the workbook. Each property will be written as a cell in the row.</param>
+    /// <param name="outputStream">The stream to write the workbook to</param>
+    public void Write(IEnumerable<IExcelRow> rows, Stream outputStream)
+    {
+        using var spreadsheetDocument = SpreadsheetDocument.Create(outputStream, SpreadsheetDocumentType.Workbook);
+        Write(rows, spreadsheetDocument);
+    }
+
+    /// <summary>
+    /// Exports the given rows to an Excel workbook
+    /// </summary>
+    /// <param name="rows">The rows to write to the workbook. Each property will be written as a cell in the row.</param>
+    /// <param name="path">The path to write the workbook to</param>
+    public void Write(IEnumerable<IExcelRow> rows, string path)
+    {
+        using var spreadsheetDocument = SpreadsheetDocument.Create(path, SpreadsheetDocumentType.Workbook);
+        Write(rows, spreadsheetDocument);
+    }
+
+    public class Grouping<TKey, TElement> : List<TElement>, IGrouping<TKey, TElement>
+    {
+        public Grouping(TKey key) => Key = key;
+        public Grouping(TKey key, int capacity) : base(capacity) => Key = key;
+        public Grouping(TKey key, IEnumerable<TElement> collection) : base(collection) => Key = key;
+        public TKey Key { get; }
+    }
+
+    public void Write(IEnumerable<object> rows, string path, string sheet)
+    {
+        using var spreadsheetDocument = SpreadsheetDocument.Create(path, SpreadsheetDocumentType.Workbook);
+        var group = new Grouping<string, object>(sheet, rows);
+        Write([group], spreadsheetDocument, []);
+    }
+
+    private static void Write(IEnumerable<IExcelRow> rows, SpreadsheetDocument spreadsheetDocument)
+    {
+        var rowsGroupedBySheet = rows.GroupBy(r => r.SheetName);
+        Write(rowsGroupedBySheet, spreadsheetDocument, typeof(IExcelRow).GetProperties());
+    }
+
+    private static void Write(IEnumerable<IGrouping<string, object>> rowsGroupedBySheet, SpreadsheetDocument spreadsheetDocument , PropertyInfo[] propertiesToIgnore)
+    {
+        if (spreadsheetDocument.WorkbookPart == null)
         {
-            var spreadsheetDocument = SpreadsheetDocument.Open(stream, isEditable: true);
-
-            if (spreadsheetDocument.WorkbookPart == null)
-            {
-                return SpreadsheetDocument.Create(stream, SpreadsheetDocumentType.Workbook);
-            }
-
-            return spreadsheetDocument;            
+            var workbookpart = spreadsheetDocument.AddWorkbookPart();
+            workbookpart.Workbook = new Workbook();
         }
 
-        public void Append(IExcelRow row, Stream outputStream)
+        var sheets = spreadsheetDocument.WorkbookPart!.Workbook.Sheets ?? spreadsheetDocument.WorkbookPart.Workbook.AppendChild(new Sheets());
+
+        
+
+        uint sheetId = 1;
+
+        foreach (var rowGroup in rowsGroupedBySheet)
         {
-            using (var spreadsheetDocument = _GetDocument(outputStream))
-            {
-                this.Write([row], spreadsheetDocument);
-            }
-        }
+            SheetData sheetData;
+            var headerWritten = false;
+            uint rowIndex = 1;
 
-        /// <summary>
-        /// Exports the given rows to an Excel workbook
-        /// </summary>
-        /// <param name="rows">The rows to write to the workbook. Each property will be written as a cell in the row.</param>
-        /// <param name="outputStream">The stream to write the workbook to</param>
-        public void Write(IEnumerable<IExcelRow> rows, Stream outputStream)
-        {
-            using (var spreadsheetDocument = SpreadsheetDocument.Create(outputStream, SpreadsheetDocumentType.Workbook))
-            {
-                this.Write(rows, spreadsheetDocument);
-            }
-        }
+            var existingSheet = sheets.ChildElements.OfType<Sheet>().FirstOrDefault(s => s.Name == rowGroup.Key);
 
-        /// <summary>
-        /// Exports the given rows to an Excel workbook
-        /// </summary>
-        /// <param name="rows">The rows to write to the workbook. Each property will be written as a cell in the row.</param>
-        /// <param name="path">The path to write the workbook to</param>
-        public void Write(IEnumerable<IExcelRow> rows, string path)
-        {
-            using (var spreadsheetDocument = SpreadsheetDocument.Create(path, SpreadsheetDocumentType.Workbook))
+            if (existingSheet == null)
             {
-                this.Write(rows, spreadsheetDocument);
-            }
-        }
+                var worksheetPart = spreadsheetDocument.WorkbookPart.AddNewPart<WorksheetPart>();
+                worksheetPart.Worksheet = new Worksheet(new SheetData());
 
-        private void Write(IEnumerable<IExcelRow> rows, SpreadsheetDocument spreadsheetDocument)
-        {
-            if (spreadsheetDocument.WorkbookPart == null)
+                var relationshipIdPart = spreadsheetDocument.WorkbookPart.GetIdOfPart(worksheetPart);
+                var sheet = new Sheet { Id = relationshipIdPart, SheetId = sheetId, Name = rowGroup.Key };
+
+                sheets.Append(sheet);
+                sheetId++;
+
+                sheetData = worksheetPart.Worksheet.GetFirstChild<SheetData>();
+            }
+            else
             {
-                var workbookpart = spreadsheetDocument.AddWorkbookPart();
-                workbookpart.Workbook = new Workbook();
+                var worksheetPart = (WorksheetPart)spreadsheetDocument.WorkbookPart.GetPartById(existingSheet.Id ?? throw new InvalidOperationException());
+                sheetData = worksheetPart.Worksheet.GetFirstChild<SheetData>();                                       
+
+                // get the correct row to write to
+                var lastSheetRow = sheetData!.ChildElements.OfType<Row>().Last();
+                rowIndex = lastSheetRow.RowIndex + 1;
+                headerWritten = true;
             }
 
-            var sheets = spreadsheetDocument.WorkbookPart.Workbook.Sheets;
-
-            if (sheets == null)
+            foreach (var row in rowGroup)
             {
-                sheets = spreadsheetDocument.WorkbookPart.Workbook.AppendChild(new Sheets());
-            }
+                var sheetRow = new Row { RowIndex = new UInt32Value(rowIndex) };
+                sheetData?.Append(sheetRow);
 
-            var rowsGroupedBySheet = rows.GroupBy(r => r.SheetName);
+                var properties = row.GetType()
+                    .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                    .Where(p => p.CanWrite)
+                    //.Concat(row.GetType()
+                    //    .GetFields(BindingFlags.Public | BindingFlags.Instance)
+                    //    .Cast<MemberInfo>())
+                    .ToArray();
 
-            uint sheetId = 1;
+                //var properties = row.GetType().GetProperties();
 
-            foreach (var rowGroup in rowsGroupedBySheet)
-            {
-                var sheetData = default(SheetData);
-                var headerWritten = false;
-                uint rowIndex = 1;
+                var validProperties = properties.Except(propertiesToIgnore, SimpleComparer.Instance).ToList();
 
-                var existingSheet = sheets.ChildElements.OfType<Sheet>().FirstOrDefault(s => s.Name == rowGroup.Key);
-
-                if (existingSheet == null)
+                if (!headerWritten)
                 {
-                    var worksheetPart = spreadsheetDocument.WorkbookPart.AddNewPart<WorksheetPart>();
-                    worksheetPart.Worksheet = new Worksheet(new SheetData());
+                    WriteHeader(validProperties, sheetRow, row);
 
-                    var relationshipIdPart = spreadsheetDocument.WorkbookPart.GetIdOfPart(worksheetPart);
-                    var sheet = new Sheet() { Id = relationshipIdPart, SheetId = sheetId, Name = rowGroup.Key };
+                    headerWritten = true;
+                    rowIndex++;
 
-                    sheets.Append(sheet);
-                    sheetId++;
+                    sheetRow = new Row { RowIndex = new UInt32Value(rowIndex) };
+                    sheetData?.Append(sheetRow);
+                }
 
-                    sheetData = worksheetPart.Worksheet.GetFirstChild<SheetData>();
+                WriteCells(validProperties, sheetRow, row);
+
+                rowIndex++;
+            }
+        }
+    }
+
+    public IEnumerable<T> Read<T>(string path, string sheet) where T : new()
+    {
+        using var spreadsheetDocument = SpreadsheetDocument.Open(path, false);
+        return Read<T>(spreadsheetDocument, sheet);
+    }
+
+    /// <summary>
+    /// Reads a known workbook format into a collection of IExcelRow implementations
+    /// </summary>
+    /// <typeparam name="T">Implementation of IExcelRow that specifies the sheet to read and the row headings to include</typeparam>
+    /// <param name="path">Path on disk of the workbook</param>
+    /// <returns>A collection of <typeparamref name="T"/></returns>
+    public IEnumerable<T> Read<T>(string path) where T : IExcelRow, new()
+    {
+        using var spreadsheetDocument = SpreadsheetDocument.Open(path, false);
+        return Read<T>(spreadsheetDocument, new T().SheetName);
+    }
+
+    /// <summary>
+    /// Reads a known workbook format into a collection of IExcelRow implementations
+    /// </summary>
+    /// <typeparam name="T">Implementation of IExcelRow that specifies the sheet to read and the row headings to include</typeparam>
+    /// <param name="stream">Stream that represents the workbook</param>
+    /// <returns>A collection of <typeparamref name="T"/></returns>
+    public IEnumerable<T> Read<T>(Stream stream) where T : IExcelRow, new()
+    {
+        using var spreadsheetDocument = SpreadsheetDocument.Open(stream, false);
+        return Read<T>(spreadsheetDocument, new T().SheetName);
+    }
+
+    private static IEnumerable<T> Read<T>(SpreadsheetDocument spreadsheetDocument, string sheetName) where T : new()
+    {
+        var toReturn = new List<T>();
+        var workBookPart = spreadsheetDocument.WorkbookPart;
+
+        if (workBookPart == null) return toReturn;
+
+        foreach (var sheet in workBookPart.Workbook.Descendants<Sheet>())
+        {
+            if (workBookPart.GetPartById(sheet.Id!) is not WorksheetPart worksheetPart)
+            {
+                // the part was supposed to be here, but wasn't found :/
+                continue;
+            }
+
+            if (sheet.Name!.HasValue && sheet.Name.Value!.Equals(sheetName))
+            {
+                toReturn.AddRange(ReadSheet<T>(worksheetPart));
+            }
+        }
+
+        return toReturn;
+    }
+
+    private static List<T> ReadSheet<T>(WorksheetPart wsPart) where T : new()
+    {
+        var toReturn = new List<T>();
+
+        // assume the first row contains column names
+        var headerRow = true;
+        var headers = new Dictionary<string, object>();
+
+        foreach (var row in wsPart.Worksheet.Descendants<Row>())
+        {
+            // one instance of T per row
+            var obj = new T();
+            var properties = obj.GetType().GetProperties();
+
+            foreach (var c in row.Elements<Cell>())
+            {
+                var column = c.GetColumn();
+                var value = c.GetCellValue();
+
+                if (headerRow)
+                {
+                    headers.Add(column, value);
                 }
                 else
                 {
-                    var worksheetPart = (WorksheetPart)spreadsheetDocument.WorkbookPart.GetPartById(existingSheet.Id);
-                    sheetData = worksheetPart.Worksheet.GetFirstChild<SheetData>();                                       
+                    // look for a property on the T that matches the name (ignore SheetName)
 
-                    // get the correct row to write to
-                    var lastSheetRow = sheetData.ChildElements.OfType<Row>().Last();
-                    rowIndex = lastSheetRow.RowIndex + 1;
-                    headerWritten = true;
+                    if (!headers.TryGetValue(column, out var columnHeader)) continue;
+                    var propertyInfo = properties.FirstOrDefault(p => p.ResolveToNameOrDisplayName().Equals(columnHeader.ToString(), StringComparison.OrdinalIgnoreCase));
+
+                    if (propertyInfo == null) continue;
+                    var t = propertyInfo.PropertyType;
+                    t = Nullable.GetUnderlyingType(t) ?? t;
+
+                    propertyInfo.SetValue(obj, t.IsEnum ? Enum.Parse(t, (string)value) : Convert.ChangeType(value, t));
                 }
+            }
 
-                // write rows to this sheet
-                var propertiesToIgnore = typeof(IExcelRow).GetProperties();                                
+            if (!headerRow) toReturn.Add(obj);
 
-                foreach (var row in rowGroup)
+            headerRow = false;
+        }
+
+        return toReturn;
+    }
+
+    private static void WriteCells(IEnumerable<PropertyInfo> properties, Row sheetRow, object userRow)
+    {
+        var columnIndex = 0;
+
+        foreach (var item in properties)
+        {
+            var result = _TryInsertExcelColumn(sheetRow, userRow, columnIndex, item, isHeader: false);
+
+            if (result.IsExcelColumn)
+            {
+                columnIndex = result.ColumnIndex;
+                continue;
+            }
+
+            var cellValue = item.GetValue(userRow);
+
+            sheetRow.InsertAt(
+                new Cell
                 {
-                    var sheetRow = new Row { RowIndex = new UInt32Value(rowIndex) };
-                    sheetData.Append(sheetRow);
+                    CellReference = sheetRow.GetCellReference(columnIndex + 1),
+                    CellValue = new CellValue(cellValue == null ? string.Empty : $"{cellValue}"),
+                    DataType = new EnumValue<CellValues>(ResolveCellType(item.PropertyType))
+                },
+                columnIndex);
 
-                    var properties = row.GetType().GetProperties();
-                    var validProperties = properties.Except(propertiesToIgnore, SimpleComparer.Instance);
-
-                    if (!headerWritten)
-                    {
-                        this.WriteHeader(validProperties, sheetRow, row);
-
-                        headerWritten = true;
-                        rowIndex++;
-
-                        sheetRow = new Row { RowIndex = new UInt32Value(rowIndex) };
-                        sheetData.Append(sheetRow);
-                    }
-
-                    this.WriteCells(validProperties, sheetRow, row);
-                    
-                    rowIndex++;
-                }
-            }
+            columnIndex++;
         }
+    }
 
-        /// <summary>
-        /// Reads a known workbook format into a collection of IExcelRow implementations
-        /// </summary>
-        /// <typeparam name="T">Implementation of IExcelRow that specifies the sheet to read and the row headings to include</typeparam>
-        /// <param name="path">Path on disk of the workbook</param>
-        /// <returns>A collection of <typeparamref name="T"/></returns>
-        public IEnumerable<T> Read<T>(string path) where T : IExcelRow, new()
+    private static CellValues ResolveCellType(Type propertyType)
+    {
+        var nullableType = Nullable.GetUnderlyingType(propertyType);
+
+        if (nullableType != null) propertyType = Nullable.GetUnderlyingType(propertyType);
+
+        // TODO: Support date? 
+        return Type.GetTypeCode(propertyType) switch
         {
-            using (var spreadsheetDocument = SpreadsheetDocument.Open(path, false))
+            TypeCode.Decimal or TypeCode.Double or TypeCode.Int16 or TypeCode.Int32 or TypeCode.Int64
+                or TypeCode.UInt16 or TypeCode.UInt32 or TypeCode.UInt64 => CellValues.Number,
+            _ => CellValues.String
+        };
+    }
+
+    private static void WriteHeader(IEnumerable<PropertyInfo> properties, Row sheetRow, object userRow)
+    {
+        var columnIndex = 0;
+
+        foreach (var item in properties)
+        {
+            var result = _TryInsertExcelColumn(sheetRow, userRow, columnIndex, item, isHeader: true);
+
+            if (result.IsExcelColumn)
             {
-                return this.Read<T>(spreadsheetDocument);
+                columnIndex = result.ColumnIndex;
+                continue;
             }
-        }
 
-        /// <summary>
-        /// Reads a known workbook format into a collection of IExcelRow implementations
-        /// </summary>
-        /// <typeparam name="T">Implementation of IExcelRow that specifies the sheet to read and the row headings to include</typeparam>
-        /// <param name="stream">Stream that represents the workbook</param>
-        /// <returns>A collection of <typeparamref name="T"/></returns>
-        public IEnumerable<T> Read<T>(Stream stream) where T : IExcelRow, new()
-        {
-            using (var spreadsheetDocument = SpreadsheetDocument.Open(stream, false))
-            {
-                return this.Read<T>(spreadsheetDocument);
-            }
-        }
+            var headerName = item.Name;
 
-        private IEnumerable<T> Read<T>(SpreadsheetDocument spreadsheetDocument) where T : IExcelRow, new()
-        {
-            var toReturn = new List<T>();
-            var workBookPart = spreadsheetDocument.WorkbookPart;
+            var displayNameAttr = item.GetCustomAttribute<System.ComponentModel.DisplayNameAttribute>(true);
 
-            foreach (var sheet in workBookPart.Workbook.Descendants<Sheet>())
-            {
-                var worksheetPart = workBookPart.GetPartById(sheet.Id) as WorksheetPart;
+            if (displayNameAttr != null) headerName = displayNameAttr.DisplayName;
 
-                if (worksheetPart == null)
+            sheetRow.InsertAt(
+                new Cell
                 {
-                    // the part was supposed to be here, but wasn't found :/
-                    continue;
-                }
+                    CellReference = sheetRow.GetCellReference(columnIndex + 1),
+                    CellValue = new CellValue(headerName),
+                    DataType = new EnumValue<CellValues>(CellValues.String)
+                },
+                columnIndex);
 
-                if (sheet.Name.HasValue && sheet.Name.Value.Equals(new T().SheetName))
+            columnIndex++;
+        }
+    }
+
+    private static InsertExcelColumnResult _TryInsertExcelColumn(Row sheetRow, object row, int columnIndex, PropertyInfo item, bool isHeader)
+    {
+        var excelColumnsAttr = item.GetCustomAttribute<ExcelColumnsAttribute>(true);
+
+        if (excelColumnsAttr == null) return InsertExcelColumnResult.IsNotExcelColumn;
+        var dict = (IDictionary<string, string>)item.GetValue(row);
+
+        if (dict == null) return InsertExcelColumnResult.IsNotExcelColumn;
+        foreach (var kvp in dict)
+        {
+            sheetRow.InsertAt(
+                new Cell
                 {
-                    toReturn.AddRange(this.ReadSheet<T>(worksheetPart));
-                }
-            }
+                    CellReference = sheetRow.GetCellReference(columnIndex + 1),
+                    CellValue = new CellValue(isHeader ?
+                        kvp.Key :
+                        kvp.Value ?? string.Empty),
+                    DataType = new EnumValue<CellValues>(isHeader ?
+                        CellValues.String :
+                        ResolveCellType(item.PropertyType))
+                },
+                columnIndex);
 
-            return toReturn;
+            columnIndex++;
         }
 
-        private List<T> ReadSheet<T>(WorksheetPart wsPart) where T : IExcelRow, new()
+        return new InsertExcelColumnResult { IsExcelColumn = true, ColumnIndex = columnIndex };
+
+    }
+
+    private class InsertExcelColumnResult
+    {
+        public static InsertExcelColumnResult IsNotExcelColumn { get; } = new() { IsExcelColumn = false };
+
+        public int ColumnIndex { get; init; }
+
+        public bool IsExcelColumn { get; init; }
+    }
+
+    private class SimpleComparer : IEqualityComparer<PropertyInfo>
+    {
+        static SimpleComparer()
         {
-            var toReturn = new List<T>();
-
-            // assume the first row contains column names
-            var headerRow = true;
-            var headers = new Dictionary<string, object>();
-
-            foreach (var row in wsPart.Worksheet.Descendants<Row>())
-            {
-                // one instance of T per row
-                var obj = new T();
-                var properties = obj.GetType().GetProperties();
-
-                foreach (Cell c in row.Elements<Cell>())
-                {
-                    var column = c.GetColumn();
-                    var value = c.GetCellValue();
-
-                    if (headerRow)
-                    {
-                        headers.Add(column, value);
-                    }
-                    else
-                    {
-                        // look for a property on the T that matches the name (ignore SheetName)
-                        object columnHeader = null;
-
-                        if (headers.TryGetValue(column, out columnHeader))
-                        {
-                            var propertyInfo = properties.Where(p =>
-                                p.ResolveToNameOrDisplayName().Equals(columnHeader.ToString(), StringComparison.OrdinalIgnoreCase)).FirstOrDefault();
-
-                            if (propertyInfo != null)
-                            {
-                                Type t = propertyInfo.PropertyType;
-                                t = Nullable.GetUnderlyingType(t) ?? t;
-
-                                if (t.IsEnum)
-                                {
-                                    propertyInfo.SetValue(obj, Enum.Parse(t, (string)value));
-                                }
-                                else
-                                {
-                                    propertyInfo.SetValue(obj, Convert.ChangeType(value, t));
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (!headerRow)
-                {
-                    toReturn.Add(obj);
-                }
-
-                headerRow = false;
-            }
-
-            return toReturn;
+            Instance = new SimpleComparer();
         }
 
-        private void WriteCells(IEnumerable<PropertyInfo> properties, Row sheetRow, IExcelRow userRow)
+        public static SimpleComparer Instance { get; }
+
+        public bool Equals(PropertyInfo x, PropertyInfo y)
         {
-            var columnIndex = 0;
-
-            foreach (var item in properties)
-            {
-                var result = _TryInsertExcelColumn(sheetRow, userRow, columnIndex, item, isHeader: false);
-
-                if (result.IsExcelColumn)
-                {
-                    columnIndex = result.ColumnIndex;
-                    continue;
-                }
-
-                var cellValue = item.GetValue(userRow);
-
-                sheetRow.InsertAt(
-                    new Cell
-                    {
-                        CellReference = sheetRow.GetCellReference(columnIndex + 1),
-                        CellValue = new CellValue(cellValue == null ? string.Empty : cellValue.ToString()),
-                        DataType = new EnumValue<CellValues>(this.ResolveCellType(item.PropertyType))
-                    },
-                    columnIndex);
-
-                columnIndex++;
-            }
+            if(x==null) return y== null;
+            if (y == null) return false;
+            return x.Name == y.Name;
         }
 
-        private CellValues ResolveCellType(Type propertyType)
+        public int GetHashCode(PropertyInfo obj)
         {
-            var nullableType = Nullable.GetUnderlyingType(propertyType);
-
-            if (nullableType != null)
-            {
-                propertyType = Nullable.GetUnderlyingType(propertyType);
-            }
-
-            // TODO: Support date? 
-            switch (Type.GetTypeCode(propertyType))
-            {
-                case TypeCode.Decimal:
-                case TypeCode.Double:
-                case TypeCode.Int16:
-                case TypeCode.Int32:
-                case TypeCode.Int64:
-                case TypeCode.UInt16:
-                case TypeCode.UInt32:
-                case TypeCode.UInt64:
-                    {
-                        return CellValues.Number;
-                    }
-                default:
-                    {
-                        return CellValues.String;
-                    }
-            }
-        }
-
-        private void WriteHeader(IEnumerable<PropertyInfo> properties, Row sheetRow, IExcelRow userRow)
-        {
-            var columnIndex = 0;
-
-            foreach (var item in properties)
-            {
-                var result = _TryInsertExcelColumn(sheetRow, userRow, columnIndex, item, isHeader: true);
-
-                if (result.IsExcelColumn)
-                {
-                    columnIndex = result.ColumnIndex;
-                    continue;
-                }
-
-                var headerName = item.Name;
-
-                var displayNameAttr = item.GetCustomAttribute<System.ComponentModel.DisplayNameAttribute>(true);
-
-                if (displayNameAttr != null)
-                {
-                    headerName = displayNameAttr.DisplayName;
-                }
-
-                sheetRow.InsertAt(
-                    new Cell
-                    {
-                        CellReference = sheetRow.GetCellReference(columnIndex + 1),
-                        CellValue = new CellValue(headerName),
-                        DataType = new EnumValue<CellValues>(CellValues.String)
-                    },
-                    columnIndex);
-
-                columnIndex++;
-            }
-        }
-
-        private InsertExcelColumnResult _TryInsertExcelColumn(Row sheetRow, IExcelRow row, int columnIndex, PropertyInfo item, bool isHeader)
-        {
-            var excelColumnsAttr = item.GetCustomAttribute<ExcelColumnsAttribute>(true);
-
-            if (excelColumnsAttr != null)
-            {
-                var dict = (IDictionary<string, string>)item.GetValue(row);
-
-                if (dict != null)
-                {
-                    foreach (var kvp in dict)
-                    {
-                        sheetRow.InsertAt(
-                            new Cell
-                            {
-                                CellReference = sheetRow.GetCellReference(columnIndex + 1),
-                                CellValue = new CellValue(isHeader ?
-                                    kvp.Key :
-                                        kvp.Value == null ?
-                                            string.Empty : kvp.Value),
-                                DataType = new EnumValue<CellValues>(isHeader ?
-                                    CellValues.String :
-                                    this.ResolveCellType(item.PropertyType))
-                            },
-                            columnIndex);
-
-                        columnIndex++;
-                    }
-
-                    return new InsertExcelColumnResult { IsExcelColumn = true, ColumnIndex = columnIndex };
-                }
-            }
-
-            return InsertExcelColumnResult.IsNotExcelColumn;
-        }
-
-        private class InsertExcelColumnResult
-        {
-            private static readonly InsertExcelColumnResult _IsNotExcelColumn = new InsertExcelColumnResult { IsExcelColumn = false };
-
-            public static InsertExcelColumnResult IsNotExcelColumn
-            {
-                get { return _IsNotExcelColumn; }
-            }
-
-            public int ColumnIndex { get; set; }
-
-            public bool IsExcelColumn { get; set; }
-        }
-
-        private class SimpleComparer : IEqualityComparer<PropertyInfo>
-        {
-            private static readonly SimpleComparer ReadonlyInstance;
-
-            static SimpleComparer()
-            {
-                ReadonlyInstance = new SimpleComparer();
-            }
-
-            public static SimpleComparer Instance
-            {
-                get { return ReadonlyInstance; }
-            }
-
-            public bool Equals(PropertyInfo x, PropertyInfo y)
-            {
-                return x.Name == y.Name;
-            }
-
-            public int GetHashCode(PropertyInfo obj)
-            {
-                // only care if the name of the property info matches
-                return obj.Name.GetHashCode();
-            }
+            // only care if the name of the property info matches
+            return obj.Name.GetHashCode();
         }
     }
 }
